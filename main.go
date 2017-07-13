@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,9 +22,10 @@ var cl *vault.Client
 var keys []string
 
 var sidelegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - select mount"
-var mainlegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - view secret\nd - delete secret\nSpace - page down"
+var mainlegend = "Tab - switch windows\nRet - view secret\na - add secret\nd - delete secret\nSpace - page down"
 var secretlegend = "e - edit secret\nq - quit view"
 var editlegend = "C-x - quit don't save\nC-s - save"
+var editmode string
 
 var mp string
 
@@ -156,7 +158,26 @@ func viewSecret(g *gocui.Gui, v *gocui.View) error {
 }
 
 func editSecret(g *gocui.Gui, v *gocui.View) error {
-	secret := v.Buffer()
+	var secretpath, secret string
+	var err error
+
+	if v.Name() == "secret" {
+		editmode = "Editing"
+		secret = v.Buffer()
+		x, _ := g.View("main")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+	} else if v.Name() == "addkeyprompt" {
+		editmode = "Writing"
+		secret = ""
+		x, _ := g.View("addkeyprompt")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+	}
 	maxX, maxY := g.Size()
 	if v, err := g.SetView("editsecret", -1, -1, maxX, maxY-9); err != nil {
 		v.Editable = true
@@ -175,27 +196,26 @@ func editSecret(g *gocui.Gui, v *gocui.View) error {
 	}
 	updateLegend(g, editlegend)
 
-	var secretpath string
-	var err error
-	x, _ := g.View("main")
-	_, cy := x.Cursor()
-
-	if secretpath, err = x.Line(cy); err != nil {
-		secretpath = ""
-	}
-
-	updateLog(g, fmt.Sprintf("Editing secret contents of %s", secretpath))
+	updateLog(g, fmt.Sprintf("%s secret contents of %s", editmode, secretpath))
 	return nil
 }
 
 func cancelEdit(g *gocui.Gui, v *gocui.View) error {
 	var secretpath string
 	var err error
-	x, _ := g.View("main")
-	_, cy := x.Cursor()
 
-	if secretpath, err = x.Line(cy); err != nil {
-		secretpath = ""
+	if editmode == "Editing" {
+		x, _ := g.View("main")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+	} else if editmode == "Writing" {
+		x, _ := g.View("addkeyprompt")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
 	}
 
 	updateLog(g, fmt.Sprintf("Canceled edit of %s", secretpath))
@@ -232,7 +252,7 @@ func deleteKeyPrompt(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
-func savePrompt(g *gocui.Gui, v *gocui.View) error {
+func addKeyPrompt(g *gocui.Gui, v *gocui.View) error {
 	x, _ := g.View("main")
 	var secretpath string
 	var err error
@@ -240,6 +260,55 @@ func savePrompt(g *gocui.Gui, v *gocui.View) error {
 	_, cy := x.Cursor()
 	if secretpath, err = x.Line(cy); err != nil {
 		secretpath = ""
+	}
+	secretpath = regexp.MustCompile("/\\w*$").Split(secretpath, 2)[0]
+	secretlength := len(secretpath) + 19
+
+	maxX, maxY := g.Size()
+	le = lineEditor{gocui.DefaultEditor}
+
+	if v, err := g.SetView("addkeyprompt", maxX/2-(secretlength+5)/2, maxY/2, maxX/2+(secretlength+5)/2, maxY/2+2); err != nil {
+		v.Frame = true
+		v.Title = "Insert Key Name"
+		v.Editable = true
+		v.Editor = &le
+		v.Wrap = false
+		v.Autoscroll = false
+
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+
+		if _, err := g.SetCurrentView("addkeyprompt"); err != nil {
+			return err
+		}
+
+		if err := v.SetCursor(len(secretpath)+1, 0); err != nil {
+			return err
+		}
+
+		fmt.Fprintln(v, secretpath+"/")
+	}
+
+	return nil
+}
+
+func savePrompt(g *gocui.Gui, v *gocui.View) error {
+	var secretpath string
+	var err error
+
+	x, _ := g.View("main")
+	if editmode == "Editing" {
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+	} else if editmode == "Writing" {
+		x, _ := g.View("addkeyprompt")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
 	}
 	secretlength := len(secretpath) + 19
 
@@ -261,24 +330,52 @@ func savePrompt(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
-func saveSecret(g *gocui.Gui, v *gocui.View) error {
-	x, _ := g.View("main")
+func checkForChanges(g *gocui.Gui, secretpath string) {
 	secretbuffer, _ := g.View("secret")
 	originalsecret := secretbuffer.Buffer()
 
-	var secretpath string
-	var err error
+	var odata map[string]interface{}
 
-	_, cy := x.Cursor()
-	if secretpath, err = x.Line(cy); err != nil {
-		secretpath = ""
+	err := json.Unmarshal([]byte(originalsecret), &odata)
+	if err != nil {
+		fmt.Println("error:", err)
 	}
 
+	resp, err := cl.Logical().Read(secretpath)
+	if err != nil {
+		fmt.Println(err)
+	}
+	if !reflect.DeepEqual(odata, resp.Data) {
+		updateLog(g, fmt.Sprintf("ERROR: Value of secret changed while editing. Write cancelled."))
+		v, _ := g.View("main")
+		homeView(g, v)
+	}
+}
+
+func saveSecret(g *gocui.Gui, v *gocui.View) error {
+	x, _ := g.View("main")
+
+	var secretpath, secret string
+	var err error
+
 	v, _ = g.View("editsecret")
-	secret := v.Buffer()
+	secret = v.Buffer()
+
+	if editmode == "Editing" {
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+		checkForChanges(g, secretpath)
+	} else if editmode == "Writing" {
+		x, _ := g.View("addkeyprompt")
+		_, cy := x.Cursor()
+		if secretpath, err = x.Line(cy); err != nil {
+			secretpath = ""
+		}
+	}
 
 	var mdata map[string]interface{}
-	var odata map[string]interface{}
 
 	err = json.Unmarshal([]byte(secret), &mdata)
 	if err != nil {
@@ -290,19 +387,6 @@ func saveSecret(g *gocui.Gui, v *gocui.View) error {
 		}
 		updateLegend(g, editlegend)
 		return nil
-	}
-
-	err = json.Unmarshal([]byte(originalsecret), &odata)
-	if err != nil {
-		fmt.Println("error:", err)
-	}
-
-	resp, err := cl.Logical().Read(secretpath)
-	if err != nil {
-		fmt.Println(err)
-	}
-	if !reflect.DeepEqual(odata, resp.Data) {
-		updateLog(g, fmt.Sprintf("ERROR: Value of secret changed while editing. Write cancelled."))
 	}
 
 	_, err = cl.Logical().Write(secretpath, mdata)
@@ -422,6 +506,12 @@ func keybindings(g *gocui.Gui) error {
 	if err := g.SetKeybinding("main", 'd', gocui.ModNone, deleteKeyPrompt); err != nil {
 		return err
 	}
+	if err := g.SetKeybinding("main", 'a', gocui.ModNone, addKeyPrompt); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("addkeyprompt", gocui.KeyEnter, gocui.ModNone, editSecret); err != nil {
+		return err
+	}
 	if err := g.SetKeybinding("side", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
 		return err
 	}
@@ -440,7 +530,7 @@ func keybindings(g *gocui.Gui) error {
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
 		return err
 	}
-	if err := g.SetKeybinding("secret", 'q', gocui.ModNone, homeView); err != nil {
+	if err := g.SetKeybinding("secret", 'q', gocui.ModNone, mainView); err != nil {
 		return err
 	}
 	if err := g.SetKeybinding("editsecret", gocui.KeyCtrlX, gocui.ModNone, cancelEdit); err != nil {
@@ -614,7 +704,26 @@ func homeView(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
+func mainView(g *gocui.Gui, v *gocui.View) error {
+	views := g.Views()
+	for i := 0; i < len(views); i++ {
+		if views[i].Name() == "side" || views[i].Name() == "main" || views[i].Name() == "log" || views[i].Name() == "legend" {
+			continue
+		} else {
+			if err := g.DeleteView(views[i].Name()); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := g.SetCurrentView("main"); err != nil {
+		return err
+	}
+	updateLegend(g, mainlegend)
+	return nil
+}
+
 func deletePrompt(g *gocui.Gui, v *gocui.View) error {
+	g.DeleteView("addkeyprompt")
 	g.DeleteView("saveprompt")
 	g.DeleteView("editsecret")
 	g.DeleteView("secret")
@@ -622,6 +731,8 @@ func deletePrompt(g *gocui.Gui, v *gocui.View) error {
 		return err
 	}
 	updateLegend(g, mainlegend)
+	v, _ = g.View("side")
+	getLine(g, v)
 	return nil
 }
 
@@ -641,4 +752,34 @@ func deleteKey(g *gocui.Gui, v *gocui.View) error {
 	updateLog(g, fmt.Sprintf("Deleted secret %s", secretpath))
 	homeView(g, v)
 	return nil
+}
+
+type lineEditor struct {
+	gocuiEditor gocui.Editor
+}
+
+var le lineEditor
+
+// Edit sets up input handling
+func (e *lineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	switch {
+	case key == gocui.KeyArrowRight:
+		x, _ := v.Cursor()
+		if x >= len(v.ViewBuffer())-3 {
+			return
+		}
+
+	case key == gocui.KeyArrowDown:
+		return
+
+	case key == gocui.KeyHome:
+		v.SetCursor(0, 0)
+		return
+
+	case key == gocui.KeyEnd:
+		v.SetCursor(len(v.ViewBuffer())-2, 0)
+		return
+	}
+
+	e.gocuiEditor.Edit(v, key, ch, mod)
 }
