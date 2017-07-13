@@ -85,6 +85,14 @@ func getLine(g *gocui.Gui, v *gocui.View) error {
 	v.SelFgColor = gocui.ColorBlack
 	v.Clear()
 	listAllKeys(keys, l, "", v)
+	if err := v.SetCursor(0, 0); err != nil {
+		return err
+	}
+	if err := v.SetOrigin(0, 0); err != nil {
+		return err
+	}
+	cx, cy := v.Cursor()
+
 	g.SetCurrentView("main")
 	updateLegend(g, mainlegend)
 	updateLog(g, fmt.Sprintf("Viewing secrets on %s mount", l))
