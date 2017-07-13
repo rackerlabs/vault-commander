@@ -21,7 +21,7 @@ var cl *vault.Client
 var keys []string
 
 var sidelegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - select mount"
-var mainlegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - view secret\nSpace - page down"
+var mainlegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - view secret\nd - delete secret\nSpace - page down"
 var secretlegend = "e - edit secret\nq - quit view"
 var editlegend = "C-x - quit don't save\nC-s - save"
 
@@ -91,7 +91,7 @@ func getLine(g *gocui.Gui, v *gocui.View) error {
 	if err := v.SetOrigin(0, 0); err != nil {
 		return err
 	}
-	cx, cy := v.Cursor()
+	//cx, cy := v.Cursor()
 
 	g.SetCurrentView("main")
 	updateLegend(g, mainlegend)
@@ -203,6 +203,35 @@ func cancelEdit(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
+func deleteKeyPrompt(g *gocui.Gui, v *gocui.View) error {
+	x, _ := g.View("main")
+	var secretpath string
+	var err error
+
+	_, cy := x.Cursor()
+	if secretpath, err = x.Line(cy); err != nil {
+		secretpath = ""
+	}
+	secretlength := len(secretpath) + 19
+
+	maxX, maxY := g.Size()
+	if v, err := g.SetView("deletekeyprompt", maxX/2-secretlength/2, maxY/2, maxX/2+secretlength/2, maxY/2+2); err != nil {
+		v.Frame = true
+		v.Title = "WARNING"
+
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+
+		if _, err := g.SetCurrentView("deletekeyprompt"); err != nil {
+			return err
+		}
+
+		fmt.Fprintln(v, "Delete "+secretpath+"? (y/n)")
+	}
+	return nil
+}
+
 func savePrompt(g *gocui.Gui, v *gocui.View) error {
 	x, _ := g.View("main")
 	var secretpath string
@@ -217,7 +246,7 @@ func savePrompt(g *gocui.Gui, v *gocui.View) error {
 	maxX, maxY := g.Size()
 	if v, err := g.SetView("saveprompt", maxX/2-secretlength/2, maxY/2, maxX/2+secretlength/2, maxY/2+2); err != nil {
 		v.Frame = true
-		v.Title = "Save Changes?"
+		v.Title = "Save Changes"
 
 		if err != gocui.ErrUnknownView {
 			return err
@@ -313,7 +342,7 @@ func updateLog(g *gocui.Gui, log string) {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	if v, err := g.SetView("side", 1, 1, 30, maxY-8); err != nil {
+	if v, err := g.SetView("side", 1, 1, 30, maxY-10); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -326,7 +355,7 @@ func layout(g *gocui.Gui) error {
 			fmt.Fprintln(v, mount)
 		}
 	}
-	if v, err := g.SetView("main", 30, 1, maxX-1, maxY-8); err != nil {
+	if v, err := g.SetView("main", 30, 1, maxX-1, maxY-10); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -335,7 +364,7 @@ func layout(g *gocui.Gui) error {
 		v.Title = "Keys"
 		v.Wrap = true
 	}
-	if v, err := g.SetView("legend", maxX-24, maxY-7, maxX-1, maxY-1); err != nil {
+	if v, err := g.SetView("legend", maxX-24, maxY-9, maxX-1, maxY-1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -343,7 +372,7 @@ func layout(g *gocui.Gui) error {
 		v.Frame = true
 		v.Title = "Legend"
 	}
-	if v, err := g.SetView("log", 1, maxY-7, maxX-25, maxY-1); err != nil {
+	if v, err := g.SetView("log", 1, maxY-9, maxX-25, maxY-1); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -382,6 +411,15 @@ func keybindings(g *gocui.Gui) error {
 		return err
 	}
 	if err := g.SetKeybinding("main", gocui.KeyTab, gocui.ModNone, nextView); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("deletekeyprompt", 'y', gocui.ModNone, deleteKey); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("deletekeyprompt", 'n', gocui.ModNone, homeView); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("main", 'd', gocui.ModNone, deleteKeyPrompt); err != nil {
 		return err
 	}
 	if err := g.SetKeybinding("side", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
@@ -571,7 +609,8 @@ func homeView(g *gocui.Gui, v *gocui.View) error {
 		return err
 	}
 	updateLegend(g, mainlegend)
-
+	v, _ = g.View("side")
+	getLine(g, v)
 	return nil
 }
 
@@ -583,5 +622,23 @@ func deletePrompt(g *gocui.Gui, v *gocui.View) error {
 		return err
 	}
 	updateLegend(g, mainlegend)
+	return nil
+}
+
+func deleteKey(g *gocui.Gui, v *gocui.View) error {
+	var secretpath string
+	var err error
+	x, _ := g.View("main")
+	_, cy := x.Cursor()
+
+	if secretpath, err = x.Line(cy); err != nil {
+		secretpath = ""
+	}
+	_, err = cl.Logical().Delete(secretpath)
+	if err != nil {
+		log.Panicln(err)
+	}
+	updateLog(g, fmt.Sprintf("Deleted secret %s", secretpath))
+	homeView(g, v)
 	return nil
 }
