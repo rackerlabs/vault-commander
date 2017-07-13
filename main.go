@@ -136,7 +136,7 @@ func viewSecret(g *gocui.Gui, v *gocui.View) error {
 	}
 
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("secret", -1, -1, maxX, maxY-7); err != nil {
+	if v, err := g.SetView("secret", -1, -1, maxX, maxY-9); err != nil {
 		v.Frame = false
 		v.Wrap = true
 
@@ -158,7 +158,7 @@ func viewSecret(g *gocui.Gui, v *gocui.View) error {
 func editSecret(g *gocui.Gui, v *gocui.View) error {
 	secret := v.Buffer()
 	maxX, maxY := g.Size()
-	if v, err := g.SetView("editsecret", -1, -1, maxX, maxY-7); err != nil {
+	if v, err := g.SetView("editsecret", -1, -1, maxX, maxY-9); err != nil {
 		v.Editable = true
 		v.Frame = false
 		v.Wrap = true
