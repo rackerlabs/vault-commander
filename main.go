@@ -67,8 +67,8 @@ func main() {
 func listMounts(cl *vault.Client) []string {
 	mounts, _ := cl.Sys().ListMounts()
 	var mountsWithKeys []string
-	for k, _ := range mounts {
-		if mountCheck(k, cl) {
+	for k, l := range mounts {
+		if mountCheck(k, l, cl) {
 			mountsWithKeys = append(mountsWithKeys, k)
 		}
 	}
@@ -138,6 +138,10 @@ func viewSecret(g *gocui.Gui, v *gocui.View) error {
 	_, cy := v.Cursor()
 	if l, err = v.Line(cy); err != nil {
 		l = ""
+	}
+
+	if l == "" {
+		return nil
 	}
 
 	maxX, maxY := g.Size()
@@ -235,6 +239,11 @@ func deleteKeyPrompt(g *gocui.Gui, v *gocui.View) error {
 	if secretpath, err = x.Line(cy); err != nil {
 		secretpath = ""
 	}
+
+	if secretpath == "" {
+		return nil
+	}
+
 	secretlength := len(secretpath) + 19
 
 	maxX, maxY := g.Size()
@@ -264,6 +273,13 @@ func addKeyPrompt(g *gocui.Gui, v *gocui.View) error {
 	if secretpath, err = x.Line(cy); err != nil {
 		secretpath = ""
 	}
+
+	if secretpath == "" {
+		v, _ = g.View("side")
+		_, cy := x.Cursor()
+		secretpath, _ = v.Line(cy)
+	}
+
 	secretpath = regexp.MustCompile("/\\w*$").Split(secretpath, 2)[0]
 	secretlength := len(secretpath) + 19
 
@@ -666,6 +682,10 @@ func listKeys(path string, cl *vault.Client) []interface{} {
 		fmt.Println(err)
 	}
 
+	if resp == nil {
+		return nil
+	}
+
 	if slice, ok := resp.Data["keys"]; ok {
 		return slice.([]interface{})
 	} else {
@@ -674,17 +694,16 @@ func listKeys(path string, cl *vault.Client) []interface{} {
 	return nil
 }
 
-func mountCheck(path string, cl *vault.Client) bool {
-	resp, err := cl.Logical().List(path)
-	if err != nil {
-		//	fmt.Println(err)
+func mountCheck(path string, t *vault.MountOutput, cl *vault.Client) bool {
+	_, err := cl.Logical().List(path)
+	if t.Type != "generic" && t.Type != "cubbyhole" {
+		return false
 	}
 
-	if resp == nil {
+	if err != nil {
 		return false
-	} else {
-		return true
 	}
+	return true
 }
 
 func homeView(g *gocui.Gui, v *gocui.View) error {
