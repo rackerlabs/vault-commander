@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -16,6 +18,7 @@ import (
 
 	vault "github.com/hashicorp/vault/api"
 	"github.com/jroimartin/gocui"
+	"github.com/nsf/termbox-go"
 )
 
 var cl *vault.Client
@@ -24,7 +27,7 @@ var keys []string
 var sidelegend = "↑ - cursor up\n↓ - cursor down\nTab - switch windows\nRet - select mount"
 var mainlegend = "Tab - switch windows\nRet - view secret\na - add secret\nd - delete secret\nSpace - page down"
 var secretlegend = "e - edit secret\nq - quit view"
-var editlegend = "C-x - quit don't save\nC-s - save"
+var editlegend = "C-l - Open in $EDITOR\nC-x - quit don't save\nC-s - save"
 var editmode string
 
 var mp string
@@ -177,7 +180,9 @@ func editSecret(g *gocui.Gui, v *gocui.View) error {
 		if secretpath, err = x.Line(cy); err != nil {
 			secretpath = ""
 		}
+		secretpath = strings.TrimSpace(secretpath)
 	}
+
 	maxX, maxY := g.Size()
 	if v, err := g.SetView("editsecret", -1, -1, maxX, maxY-9); err != nil {
 		v.Editable = true
@@ -212,13 +217,11 @@ func cancelEdit(g *gocui.Gui, v *gocui.View) error {
 		}
 	} else if editmode == "Writing" {
 		x, _ := g.View("addkeyprompt")
-		_, cy := x.Cursor()
-		if secretpath, err = x.Line(cy); err != nil {
-			secretpath = ""
-		}
+		secretpath = x.Buffer()
+		secretpath = strings.TrimSpace(secretpath)
 	}
 
-	updateLog(g, fmt.Sprintf("Canceled edit of %s", secretpath))
+	updateLog(g, fmt.Sprintf("Canceled edit of %s.", secretpath))
 	homeView(g, v)
 	return nil
 }
@@ -283,11 +286,12 @@ func addKeyPrompt(g *gocui.Gui, v *gocui.View) error {
 			return err
 		}
 
+		fmt.Fprintln(v, secretpath+"/")
+
 		if err := v.SetCursor(len(secretpath)+1, 0); err != nil {
 			return err
 		}
 
-		fmt.Fprintln(v, secretpath+"/")
 	}
 
 	return nil
@@ -305,10 +309,8 @@ func savePrompt(g *gocui.Gui, v *gocui.View) error {
 		}
 	} else if editmode == "Writing" {
 		x, _ := g.View("addkeyprompt")
-		_, cy := x.Cursor()
-		if secretpath, err = x.Line(cy); err != nil {
-			secretpath = ""
-		}
+		secretpath = x.Buffer()
+		secretpath = strings.TrimSpace(secretpath)
 	}
 	secretlength := len(secretpath) + 19
 
@@ -369,10 +371,8 @@ func saveSecret(g *gocui.Gui, v *gocui.View) error {
 		checkForChanges(g, secretpath)
 	} else if editmode == "Writing" {
 		x, _ := g.View("addkeyprompt")
-		_, cy := x.Cursor()
-		if secretpath, err = x.Line(cy); err != nil {
-			secretpath = ""
-		}
+		secretpath = x.Buffer()
+		secretpath = strings.TrimSpace(secretpath)
 	}
 
 	var mdata map[string]interface{}
@@ -419,7 +419,7 @@ func updateLegend(g *gocui.Gui, legend string) {
 func updateLog(g *gocui.Gui, log string) {
 	v, _ := g.View("log")
 	t := time.Now()
-	longForm := "2006-01-02 3:04pm (MST)"
+	longForm := "2006-01-02 3:04:05pm (MST)"
 	fmt.Fprintln(v, t.Format(longForm), log)
 }
 
@@ -534,6 +534,9 @@ func keybindings(g *gocui.Gui) error {
 		return err
 	}
 	if err := g.SetKeybinding("editsecret", gocui.KeyCtrlX, gocui.ModNone, cancelEdit); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding("editsecret", gocui.KeyCtrlL, gocui.ModNone, openEditor); err != nil {
 		return err
 	}
 	if err := g.SetKeybinding("saveprompt", 'y', gocui.ModNone, saveSecret); err != nil {
@@ -733,6 +736,7 @@ func deletePrompt(g *gocui.Gui, v *gocui.View) error {
 	updateLegend(g, mainlegend)
 	v, _ = g.View("side")
 	getLine(g, v)
+
 	return nil
 }
 
@@ -782,4 +786,64 @@ func (e *lineEditor) Edit(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modif
 	}
 
 	e.gocuiEditor.Edit(v, key, ch, mod)
+}
+
+func openEditor(g *gocui.Gui, v *gocui.View) error {
+	file, err := ioutil.TempFile(os.TempDir(), "vault-commander-")
+	if err != nil {
+		log.Panicln(err)
+	}
+	defer os.Remove(file.Name())
+
+	sbuffer, _ := g.View("editsecret")
+	val := sbuffer.Buffer()
+	if val != "" {
+		fmt.Fprint(file, val)
+	}
+	file.Close()
+
+	info, err := os.Stat(file.Name())
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	syseditor := os.Getenv("EDITOR")
+	if syseditor == "" {
+		syseditor = "vim"
+	}
+
+	cmd := exec.Command(syseditor, file.Name())
+	cmd.Stdout = os.Stdout
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+	termbox.Close()
+	err = cmd.Run()
+	termbox.Init()
+
+	// sync termbox to reset console settings
+	// this is required because the external editor can modify the console
+	defer g.Execute(func(_ *gocui.Gui) error {
+		termbox.Close()
+		termbox.Init()
+		return err
+	})
+	if err != nil {
+		log.Panicln("oh noe!")
+	}
+
+	newInfo, err := os.Stat(file.Name())
+	if err != nil || newInfo.ModTime().Before(info.ModTime()) {
+		log.Panicln(err)
+	}
+
+	newVal, err := ioutil.ReadFile(file.Name())
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	v.SetCursor(0, 0)
+	v.SetOrigin(0, 0)
+	v.Clear()
+	fmt.Fprint(v, strings.TrimSpace(string(newVal)))
+	return nil
 }
