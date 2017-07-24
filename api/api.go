@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -110,13 +111,17 @@ func vaultToken() string {
 
 func ReadValue(path string, v *gocui.View) string {
 	resp, err := cl.Logical().Read(path)
+	buf := new(bytes.Buffer)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "\t")
 
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	j, _ := json.MarshalIndent(resp.Data, "", "\t")
-	return string(j)
+	enc.Encode(&resp.Data)
+	return string(buf.String())
 }
 
 func ComparePathToValue(path string, contents map[string]interface{}) bool {
